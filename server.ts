@@ -28,11 +28,21 @@ const upload = multer({
 const sessions = new Map<string, ShareSession>();
 
 // Google Service Account Authentication
-const saEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-const saKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n");
+let authClient: JWT | null = null;
+let saEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+let saKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n");
 const sharedFolderId = process.env.SHARED_FOLDER_ID || "1Qx-e-2pj6OE8x8-cye2y2P6mDDaa9_qv";
 
-let authClient: JWT | null = null;
+// Support for full JSON credentials (foolproof method)
+if (process.env.GOOGLE_CREDENTIALS_JSON) {
+  try {
+    const creds = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+    saEmail = creds.client_email;
+    saKey = creds.private_key;
+  } catch (e) {
+    console.error("[AUTH] Failed to parse GOOGLE_CREDENTIALS_JSON. Make sure it is valid JSON.");
+  }
+}
 
 if (saEmail && saKey) {
   authClient = new JWT({
