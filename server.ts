@@ -243,72 +243,95 @@ app.post("/api/admin/disconnect", (req, res) => {
   res.json({ success: true });
 });
 
-// Upload endpoint (anonymous or authenticated)
-app.post("/api/upload", upload.array("files"), async (req, res) => {
+// Init endpoint for direct uploads
+app.post("/api/upload/init", async (req, res) => {
   if (!authClient) {
-    return res.status(503).json({
-      error: "Google Drive is not configured by the Administrator. Please check environment variables.",
-    });
+    return res.status(503).json({ error: "Google Drive is not configured by the Administrator." });
   }
 
-  const reqFiles = req.files as Express.Multer.File[] | undefined;
-  const rawText = req.body.text as string | undefined;
+  const { files, text } = req.body as { 
+    files?: { name: string; size: number; mimeType: string }[],
+    text?: string
+  };
 
-  // We must have either uploaded files or raw text to share
-  if ((!reqFiles || reqFiles.length === 0) && !rawText) {
-    return res.status(400).json({ error: "Please upload at least one file or paste text." });
+  if ((!files || files.length === 0) && !text) {
+    return res.status(400).json({ error: "No files or text provided." });
   }
 
   try {
-    const uploadedFiles: SharedFile[] = [];
     const token = await getAccessToken();
+    const uploadUrls: string[] = [];
+    let textDriveId: string | undefined;
 
-    // 1. Handle actual files
-    if (reqFiles && reqFiles.length > 0) {
-      for (const file of reqFiles) {
-        const driveId = await uploadToDrive(
-          file.buffer,
-          file.originalname,
-          file.mimetype || "application/octet-stream",
-          sharedFolderId,
-          token
-        );
-        
-        uploadedFiles.push({
-          id: Math.random().toString(36).substring(2, 9),
-          driveId,
-          name: file.originalname,
-          size: file.size,
-          mimeType: file.mimetype || "application/octet-stream",
-        });
-      }
-    }
-
-    // 2. Handle pasted text (create as a .txt file)
-    if (rawText && rawText.trim().length > 0) {
-      const textBuffer = Buffer.from(rawText);
-      const textFileName = `pasted-text-${Date.now().toString().slice(-4)}.txt`;
-      const driveId = await uploadToDrive(
-        textBuffer,
-        textFileName,
-        "text/plain",
-        sharedFolderId,
-        token
-      );
-
-      uploadedFiles.push({
-        id: Math.random().toString(36).substring(2, 9),
-        driveId,
-        name: textFileName,
-        size: textBuffer.length,
-        mimeType: "text/plain",
-      });
-    }
-
-    // Generate non-colliding unique 6-character code
     let code = generateCode();
     while (sessions.has(code)) {
       code = generateCode();
+    }
+
+    if (text) {
+      const textBuffer = Buffer.from(text);
+      const textFileName = `pasted-text-${code}.txt`;
+      textDriveId = await uploadToDrive(textBuffer, textFileName, "text/plain", sharedFolderId, token);
+    }
+
+    if (files) {
+      for (const f of files) {
+        const initRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "X-Upload-Content-Type": f.mimeType,
+          },
+          body: JSON.stringify({ name: f.name, parents: [sharedFolderId] })
+        });
+        
+        if (!initRes.ok) {
+          throw new Error(`Failed to initialize Google Drive upload: ${await initRes.text()}`);
+        }
+        
+        const location = initRes.headers.get("Location");
+        if (location) {
+          uploadUrls.push(location);
+        } else {
+          throw new Error("Google Drive did not return an upload URL.");
+        }
+      }
+    }
+
+    res.json({ code, uploadUrls, textDriveId });
+  } catch (error: any) {
+    console.error("Upload init failed:", error);
+    res.status(500).json({ error: `Upload init failed: ${error.message}` });
+  }
+});
+
+// Finalize upload session
+app.post("/api/upload/finalize", async (req, res) => {
+  const { code, uploadedDriveIds } = req.body as { code: string, uploadedDriveIds: string[] };
+  
+  if (!code || !uploadedDriveIds || uploadedDriveIds.length === 0) {
+    return res.status(400).json({ error: "Invalid finalize request." });
+  }
+
+  try {
+    const token = await getAccessToken();
+    const uploadedFiles: SharedFile[] = [];
+    
+    for (const driveId of uploadedDriveIds) {
+      const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${driveId}?fields=id,name,mimeType,size`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (driveRes.ok) {
+        const fileData = await driveRes.json() as any;
+        uploadedFiles.push({
+          id: Math.random().toString(36).substring(2, 9),
+          driveId: fileData.id,
+          name: fileData.name || "Unknown File",
+          size: parseInt(fileData.size || "0", 10),
+          mimeType: fileData.mimeType || "application/octet-stream"
+        });
+      }
     }
 
     const duration = 60 * 60 * 1000; // 1 hour
@@ -327,9 +350,9 @@ app.post("/api/upload", upload.array("files"), async (req, res) => {
     console.log(`[UPLOAD] Share created: ${code} containing ${uploadedFiles.length} file(s).`);
 
     res.json(newSession);
-  } catch (error: any) {
-    console.error("Upload handler failed:", error);
-    res.status(500).json({ error: `Upload failed: ${error.message}` });
+  } catch (err: any) {
+    console.error("Upload finalize failed:", err);
+    res.status(500).json({ error: `Finalize failed: ${err.message}` });
   }
 });
 

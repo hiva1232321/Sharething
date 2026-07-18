@@ -32,7 +32,7 @@ export default function App() {
     folderId: null,
   });
   const [isAdminOpen, setIsAdminOpen] = useState(false);
-  
+
   // Drag & drop
   const [isDragActive, setIsDragActive] = useState(false);
   const [filesToUpload, setFilesToUpload] = useState<File[]>([]);
@@ -63,6 +63,22 @@ export default function App() {
       loadSharedSession(sharedCode);
     }
   }, [sharedCode]);
+
+  // Auto-fetch admin status on load
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch("/api/admin/status");
+        if (res.ok) {
+          const data = await res.json() as AdminStatus;
+          setAdminStatus(data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch admin status", err);
+      }
+    };
+    fetchStatus();
+  }, []);
 
   // Update countdown timer for shared session
   useEffect(() => {
@@ -156,31 +172,76 @@ export default function App() {
     setUploadError(null);
 
     try {
-      const formData = new FormData();
-      filesToUpload.forEach((file) => {
-        formData.append("files", file);
+      // 1. Get Resumable Upload URLs from Backend
+      const fileMetadata = filesToUpload.map(f => ({ 
+        name: f.name, 
+        size: f.size, 
+        mimeType: f.type || "application/octet-stream" 
+      }));
+      
+      const initRes = await fetch("/api/upload/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          files: fileMetadata,
+          text: pastedText.trim() ? pastedText : undefined
+        })
       });
       
-      if (pastedText.trim()) {
-        formData.append("text", pastedText);
+      if (!initRes.ok) {
+        const err = await initRes.json();
+        throw new Error(err.error || "Failed to initialize upload");
+      }
+      
+      const sessionData = await initRes.json();
+      const uploadedDriveIds: string[] = [];
+      
+      // If there's text, the backend uploaded it directly and returned its ID
+      if (sessionData.textDriveId) {
+        uploadedDriveIds.push(sessionData.textDriveId);
       }
 
-      const res = await fetch("/api/upload", {
+      // 2. Direct PUT to Google Drive for each file
+      for (let i = 0; i < filesToUpload.length; i++) {
+        const file = filesToUpload[i];
+        const uploadUrl = sessionData.uploadUrls[i];
+        
+        if (!uploadUrl) continue;
+        
+        const putRes = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": file.type || "application/octet-stream" },
+          body: file
+        });
+        
+        if (!putRes.ok) {
+          throw new Error(`Failed to upload ${file.name}`);
+        }
+        
+        const putResData = await putRes.json();
+        uploadedDriveIds.push(putResData.id);
+      }
+      
+      // 3. Finalize Share Session
+      const finRes = await fetch("/api/upload/finalize", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          code: sessionData.code,
+          uploadedDriveIds 
+        })
       });
-
-      if (res.ok) {
-        const data = await res.json() as ShareSession;
-        setCreatedSession(data);
-        setFilesToUpload([]);
-        setPastedText("");
-      } else {
-        const err = await res.json();
-        setUploadError(err.error || "Failed to create share link.");
+      
+      if (!finRes.ok) {
+        throw new Error("Failed to finalize share link");
       }
-    } catch (err) {
-      setUploadError("Network error occurred. Please try again.");
+      
+      const finalSession = await finRes.json() as ShareSession;
+      setCreatedSession(finalSession);
+      setFilesToUpload([]);
+      setPastedText("");
+    } catch (err: any) {
+      setUploadError(err.message || "Network error occurred. Please try again.");
     } finally {
       setUploading(false);
     }
@@ -232,7 +293,7 @@ export default function App() {
     <div id="app-container" className="min-h-screen bg-[#F8F7F3] text-slate-800 flex flex-col font-sans transition-all">
       {/* Header */}
       <header id="app-header" className="max-w-7xl w-full mx-auto px-6 py-6 flex justify-between items-center border-b border-slate-200/50">
-        <div className="flex items-center gap-3">
+        <a href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
           <div className="w-9 h-9 bg-slate-900 rounded-xl flex items-center justify-center shadow-sm">
             <div className="w-3.5 h-3.5 bg-[#F8F7F3] rounded-full"></div>
           </div>
@@ -240,17 +301,16 @@ export default function App() {
             <span className="text-lg font-bold tracking-tight text-slate-900 block">ShareThing</span>
             <span className="text-[10px] font-medium tracking-wider text-slate-400 uppercase -mt-1 block">Ephemeral Sharing</span>
           </div>
-        </div>
+        </a>
 
         <div className="flex items-center gap-4">
           {/* Admin / Setup status pill */}
           <button
             onClick={() => setIsAdminOpen(!isAdminOpen)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all ${
-              adminStatus.connected
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all ${adminStatus.connected
                 ? "bg-emerald-50 border-emerald-200/60 text-emerald-700"
                 : "bg-amber-50 border-amber-200/60 text-amber-700"
-            }`}
+              }`}
           >
             <span className={`w-2 h-2 rounded-full ${adminStatus.connected ? "bg-emerald-500" : "bg-amber-500 animate-pulse"}`}></span>
             <span>{adminStatus.connected ? "Storage Connected" : "Storage Offline"}</span>
@@ -486,11 +546,10 @@ export default function App() {
                       onDragLeave={handleDrag}
                       onDrop={handleDrop}
                       onClick={() => fileInputRef.current?.click()}
-                      className={`border-2 border-dashed rounded-2xl bg-[#FBFBFA]/50 p-8 flex flex-col items-center justify-center gap-4 cursor-pointer transition-all ${
-                        isDragActive
+                      className={`border-2 border-dashed rounded-2xl bg-[#FBFBFA]/50 p-8 flex flex-col items-center justify-center gap-4 cursor-pointer transition-all ${isDragActive
                           ? "border-slate-900 bg-slate-50/50"
                           : "border-slate-200 hover:border-slate-400"
-                      }`}
+                        }`}
                     >
                       <input
                         type="file"
@@ -697,7 +756,7 @@ export default function App() {
         </div>
         <div className="text-center sm:text-right flex flex-col gap-1">
           <p>
-            Made by Shiva Matangulu. This is only made for my personal project or for researching my own intrest.
+            Made by Shiva Matangulu. This is only made for my personal project or for researching my own interest.
           </p>
           <p>
             If any queries say mail to <a href="mailto:shivamatangulu41@gmail.com" className="text-slate-500 hover:text-slate-700 underline">shivamatangulu41@gmail.com</a>
