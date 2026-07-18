@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
-import { googleSignIn, logout } from "../lib/firebase";
 import { AdminStatus } from "../types";
-import { ShieldCheck, LogIn, LogOut, CheckCircle2, AlertTriangle, RefreshCw } from "lucide-react";
+import { ShieldCheck, CheckCircle2, RefreshCw } from "lucide-react";
 
 interface AdminPanelProps {
   onStatusChange?: (status: AdminStatus) => void;
@@ -14,7 +13,6 @@ export default function AdminPanel({ onStatusChange }: AdminPanelProps) {
     folderId: null,
   });
   const [loading, setLoading] = useState(true);
-  const [connecting, setConnecting] = useState(false);
 
   // Fetch admin status from backend
   const fetchStatus = async () => {
@@ -38,51 +36,6 @@ export default function AdminPanel({ onStatusChange }: AdminPanelProps) {
     fetchStatus();
   }, []);
 
-  const handleConnect = async () => {
-    setConnecting(true);
-    try {
-      const result = await googleSignIn();
-      if (result) {
-        // Send token and email to Express backend
-        const res = await fetch("/api/admin/connect", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            accessToken: result.accessToken,
-            email: result.user.email,
-          }),
-        });
-
-        if (res.ok) {
-          await fetchStatus();
-        } else {
-          const err = await res.json();
-          alert(`Failed to link Google Drive: ${err.error || "Unknown error"}`);
-        }
-      }
-    } catch (err: any) {
-      console.error("Connect failed", err);
-      alert(`Sign in failed: ${err.message || "Unknown error"}`);
-    } finally {
-      setConnecting(false);
-    }
-  };
-
-  const handleDisconnect = async () => {
-    if (!window.confirm("Disconnect Google Drive? Users will not be able to upload until linked again.")) {
-      return;
-    }
-    try {
-      await fetch("/api/admin/disconnect", { method: "POST" });
-      await logout();
-      await fetchStatus();
-    } catch (err) {
-      console.error("Disconnect failed", err);
-    }
-  };
-
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-xs text-slate-400">
@@ -101,51 +54,26 @@ export default function AdminPanel({ onStatusChange }: AdminPanelProps) {
         
         <div className="flex-1 space-y-1">
           <h3 className="text-sm font-semibold text-slate-800">
-            {adminStatus.connected ? "Storage Linked Successfully" : "Storage Setup Required"}
+            {adminStatus.connected ? "Storage Connected" : "Storage Setup Required"}
           </h3>
           <p className="text-xs text-slate-500 leading-normal">
             {adminStatus.connected
-              ? `Ephemeral files will store in owner's Google Drive (${adminStatus.email}).`
-              : "As the app creator, please link your Google Drive to enable guest file sharing."}
+              ? `All ephemeral files are stored securely in Shiva Matangulu's private Google Drive repository.`
+              : "Service Account credentials are missing. Please add environment variables on Render."}
           </p>
           
           {adminStatus.connected && (
-            <div className="flex items-center gap-1.5 pt-1.5 text-[11px] font-medium text-emerald-600">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>Dedicated application folder created</span>
+            <div className="flex flex-col gap-1 pt-2">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-600">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Dedicated repository active</span>
+              </div>
+              <div className="text-[10px] text-slate-400 font-mono mt-1">
+                Folder ID: {adminStatus.folderId ? `${adminStatus.folderId.slice(0, 12)}...` : "None"}
+              </div>
             </div>
           )}
         </div>
-      </div>
-
-      <div className="mt-4 pt-3 border-t border-slate-100 flex justify-end">
-        {adminStatus.connected ? (
-          <button
-            onClick={handleDisconnect}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            Disconnect Drive
-          </button>
-        ) : (
-          <button
-            onClick={handleConnect}
-            disabled={connecting}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-all shadow-sm disabled:opacity-50"
-          >
-            {connecting ? (
-              <>
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                Connecting...
-              </>
-            ) : (
-              <>
-                <LogIn className="w-3.5 h-3.5" />
-                Link Google Drive
-              </>
-            )}
-          </button>
-        )}
       </div>
     </div>
   );

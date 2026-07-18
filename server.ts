@@ -3,6 +3,7 @@ import path from "path";
 import multer from "multer";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
+import { JWT } from "google-auth-library";
 import { ShareSession, SharedFile, AdminStatus } from "./src/types";
 
 dotenv.config();
@@ -26,13 +27,34 @@ const upload = multer({
 // In-memory data store
 const sessions = new Map<string, ShareSession>();
 
-// Admin state
-let adminCredentials: {
-  accessToken: string;
-  email: string;
-  folderId: string;
-  connectedAt: number;
-} | null = null;
+// Google Service Account Authentication
+const saEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+const saKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n");
+const sharedFolderId = process.env.SHARED_FOLDER_ID || "1Qx-e-2pj6OE8x8-cye2y2P6mDDaa9_qv";
+
+let authClient: JWT | null = null;
+
+if (saEmail && saKey) {
+  authClient = new JWT({
+    email: saEmail,
+    key: saKey,
+    scopes: ["https://www.googleapis.com/auth/drive"],
+  });
+  console.log(`[AUTH] Google Service Account initialized for ${saEmail}`);
+} else {
+  console.warn(`[AUTH] Service Account credentials missing in environment variables.`);
+}
+
+async function getAccessToken(): Promise<string> {
+  if (!authClient) {
+    throw new Error("Google Service Account is not configured. Please check your environment variables.");
+  }
+  const credentials = await authClient.authorize();
+  if (!credentials.access_token) {
+    throw new Error("Failed to retrieve Google Access Token.");
+  }
+  return credentials.access_token;
+}
 
 // Alphabet for 6-character shortcode
 const ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -159,13 +181,14 @@ setInterval(async () => {
       console.log(`[CLEANUP] Share link ${code} has expired. Deleting files...`);
       
       // Attempt to delete files in Google Drive if credentials exist
-      if (adminCredentials?.accessToken) {
+      try {
+        const token = await getAccessToken();
         for (const file of session.files) {
           console.log(`[CLEANUP] Deleting file: ${file.name} (${file.driveId})`);
-          await deleteFromDrive(file.driveId, adminCredentials.accessToken);
+          await deleteFromDrive(file.driveId, token);
         }
-      } else {
-        console.warn(`[CLEANUP] Admin credentials missing. Could not delete files in Google Drive.`);
+      } catch (err: any) {
+        console.warn(`[CLEANUP] Could not delete files in Google Drive: ${err.message}`);
       }
 
       // Delete from metadata map
@@ -178,11 +201,11 @@ setInterval(async () => {
 
 // Get Admin and Google Drive connection status
 app.get("/api/admin/status", (req, res) => {
-  if (adminCredentials) {
+  if (authClient) {
     res.json({
       connected: true,
-      email: adminCredentials.email,
-      folderId: adminCredentials.folderId,
+      email: "shivamatangulu41@gmail.com",
+      folderId: sharedFolderId,
     } as AdminStatus);
   } else {
     res.json({
@@ -193,40 +216,21 @@ app.get("/api/admin/status", (req, res) => {
   }
 });
 
-// Admin connecting/linking Google Drive
+// Admin connecting/linking Google Drive (Mocked since Service Account is used)
 app.post("/api/admin/connect", async (req, res) => {
-  const { accessToken, email } = req.body;
-  if (!accessToken || !email) {
-    return res.status(400).json({ error: "accessToken and email are required" });
-  }
-
-  try {
-    const folderId = await getOrCreateFolder(accessToken);
-    adminCredentials = {
-      accessToken,
-      email,
-      folderId,
-      connectedAt: Date.now(),
-    };
-    console.log(`[ADMIN] Google Drive connected for ${email}. Folder ID: ${folderId}`);
-    res.json({ success: true, folderId });
-  } catch (error: any) {
-    console.error("Admin connect failed:", error);
-    res.status(500).json({ error: `Connection failed: ${error.message}` });
-  }
+  res.json({ success: true, folderId: sharedFolderId });
 });
 
-// Admin disconnecting Google Drive
+// Admin disconnecting Google Drive (Mocked since Service Account is used)
 app.post("/api/admin/disconnect", (req, res) => {
-  adminCredentials = null;
   res.json({ success: true });
 });
 
 // Upload endpoint (anonymous or authenticated)
 app.post("/api/upload", upload.array("files"), async (req, res) => {
-  if (!adminCredentials) {
+  if (!authClient) {
     return res.status(503).json({
-      error: "Google Drive is not connected by the Administrator. Please link a Google Drive first.",
+      error: "Google Drive is not configured by the Administrator. Please check environment variables.",
     });
   }
 
@@ -240,6 +244,7 @@ app.post("/api/upload", upload.array("files"), async (req, res) => {
 
   try {
     const uploadedFiles: SharedFile[] = [];
+    const token = await getAccessToken();
 
     // 1. Handle actual files
     if (reqFiles && reqFiles.length > 0) {
@@ -248,8 +253,8 @@ app.post("/api/upload", upload.array("files"), async (req, res) => {
           file.buffer,
           file.originalname,
           file.mimetype || "application/octet-stream",
-          adminCredentials.folderId,
-          adminCredentials.accessToken
+          sharedFolderId,
+          token
         );
         
         uploadedFiles.push({
@@ -270,8 +275,8 @@ app.post("/api/upload", upload.array("files"), async (req, res) => {
         textBuffer,
         textFileName,
         "text/plain",
-        adminCredentials.folderId,
-        adminCredentials.accessToken
+        sharedFolderId,
+        token
       );
 
       uploadedFiles.push({
@@ -342,14 +347,15 @@ app.get("/api/download/:code/:fileId", async (req, res) => {
     return res.status(404).json({ error: "File not found." });
   }
 
-  if (!adminCredentials) {
+  if (!authClient) {
     return res.status(503).json({ error: "Google Drive is currently offline." });
   }
 
   try {
     console.log(`[DOWNLOAD] Fetching file from Google Drive: ${file.name} (${file.driveId})`);
+    const token = await getAccessToken();
     const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${file.driveId}?alt=media`, {
-      headers: { Authorization: `Bearer ${adminCredentials.accessToken}` },
+      headers: { Authorization: `Bearer ${token}` },
     });
 
     if (!driveRes.ok) {
@@ -389,10 +395,9 @@ app.post("/api/share/:code/destruct", async (req, res) => {
   }
 
   try {
-    if (adminCredentials?.accessToken) {
-      for (const file of session.files) {
-        await deleteFromDrive(file.driveId, adminCredentials.accessToken);
-      }
+    const token = await getAccessToken();
+    for (const file of session.files) {
+      await deleteFromDrive(file.driveId, token);
     }
     sessions.delete(code);
     res.json({ success: true });

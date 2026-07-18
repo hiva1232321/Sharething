@@ -253,7 +253,7 @@ export default function App() {
             }`}
           >
             <span className={`w-2 h-2 rounded-full ${adminStatus.connected ? "bg-emerald-500" : "bg-amber-500 animate-pulse"}`}></span>
-            <span>{adminStatus.connected ? "Google Drive Connected" : "Link Google Drive"}</span>
+            <span>{adminStatus.connected ? "Storage Connected" : "Storage Offline"}</span>
           </button>
         </div>
       </header>
@@ -471,9 +471,9 @@ export default function App() {
                       <div className="p-4 bg-amber-50 border border-amber-200/50 rounded-2xl flex items-start gap-3">
                         <ShieldAlert className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
                         <div className="space-y-1">
-                          <p className="text-xs font-bold text-amber-800">Administrator Credentials Required</p>
+                          <p className="text-xs font-bold text-amber-800">Storage Offline</p>
                           <p className="text-xs text-amber-700 leading-normal">
-                            To enable the anonymous file sharing, the administrator must link their Google Drive. Click the <strong className="font-bold">"Link Google Drive"</strong> button above.
+                            To enable anonymous file sharing, the administrator must configure the Google Service Account credentials in the backend environment variables.
                           </p>
                         </div>
                       </div>
