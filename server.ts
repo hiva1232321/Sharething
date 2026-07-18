@@ -403,7 +403,8 @@ app.post("/api/share/:code/destruct", async (req, res) => {
 
 // Configure Vite middleware or Static files hosting
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  const isProduction = process.env.NODE_ENV === "production" || process.env.RENDER === "true";
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
