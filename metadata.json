@@ -1,0 +1,6 @@
+{
+  "name": "ShareThing",
+  "description": "A modern web application for temporarily sharing files securely using Google Drive as transient storage, with links that expire and self-destruct after one hour.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
