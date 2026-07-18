@@ -3,7 +3,7 @@ import path from "path";
 import multer from "multer";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
-import { JWT } from "google-auth-library";
+import { JWT, OAuth2Client, AuthClient } from "google-auth-library";
 import { ShareSession, SharedFile, AdminStatus } from "./src/types";
 
 dotenv.config();
@@ -27,43 +27,50 @@ const upload = multer({
 // In-memory data store
 const sessions = new Map<string, ShareSession>();
 
-// Google Service Account Authentication
-let authClient: JWT | null = null;
-let saEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-let saKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n");
+// Google Authentication
+let authClient: AuthClient | null = null;
 const sharedFolderId = process.env.SHARED_FOLDER_ID || "1Qx-e-2pj6OE8x8-cye2y2P6mDDaa9_qv";
+let authEmail = "Personal Account (OAuth)";
 
-// Support for full JSON credentials (foolproof method)
-if (process.env.GOOGLE_CREDENTIALS_JSON) {
+// 1. Try OAuth2 Refresh Token (Best for personal @gmail.com accounts)
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REFRESH_TOKEN) {
+  const oauth2Client = new OAuth2Client(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET
+  );
+  oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+  authClient = oauth2Client;
+  console.log(`[AUTH] Google OAuth2 initialized successfully.`);
+} 
+// 2. Try Service Account JSON
+else if (process.env.GOOGLE_CREDENTIALS_JSON) {
   try {
     const creds = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
-    saEmail = creds.client_email;
-    saKey = creds.private_key;
+    authClient = new JWT({
+      email: creds.client_email,
+      key: creds.private_key,
+      scopes: ["https://www.googleapis.com/auth/drive"],
+    });
+    authEmail = creds.client_email;
+    console.log(`[AUTH] Google Service Account initialized for ${authEmail}`);
   } catch (e) {
     console.error("[AUTH] Failed to parse GOOGLE_CREDENTIALS_JSON. Make sure it is valid JSON.");
   }
 }
 
-if (saEmail && saKey) {
-  authClient = new JWT({
-    email: saEmail,
-    key: saKey,
-    scopes: ["https://www.googleapis.com/auth/drive"],
-  });
-  console.log(`[AUTH] Google Service Account initialized for ${saEmail}`);
-} else {
-  console.warn(`[AUTH] Service Account credentials missing in environment variables.`);
+if (!authClient) {
+  console.warn(`[AUTH] No Google Drive credentials found in environment variables.`);
 }
 
 async function getAccessToken(): Promise<string> {
   if (!authClient) {
-    throw new Error("Google Service Account is not configured. Please check your environment variables.");
+    throw new Error("Google Drive is not configured. Please check your environment variables.");
   }
-  const credentials = await authClient.authorize();
-  if (!credentials.access_token) {
+  const tokenRes = await authClient.getAccessToken();
+  if (!tokenRes.token) {
     throw new Error("Failed to retrieve Google Access Token.");
   }
-  return credentials.access_token;
+  return tokenRes.token;
 }
 
 // Alphabet for 6-character shortcode
