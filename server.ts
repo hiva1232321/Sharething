@@ -276,12 +276,16 @@ app.post("/api/upload/init", async (req, res) => {
 
     if (files) {
       for (const f of files) {
+        // Pass the Origin header so Google Drive enables CORS for the browser's PUT request
+        const clientOrigin = req.headers.origin || "https://sharething-yw19.onrender.com";
+        
         const initRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
             "X-Upload-Content-Type": f.mimeType,
+            "Origin": clientOrigin,
           },
           body: JSON.stringify({ name: f.name, parents: [sharedFolderId] })
         });
